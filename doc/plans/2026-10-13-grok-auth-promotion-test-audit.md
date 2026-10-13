@@ -40,13 +40,13 @@ Use checked-in root Vitest projects config (Grok has no separate config), exact 
 
 ## Checkout reproduction
 
-Use a fresh checkout at the exact proof base above with repository dependencies installed through the pinned pnpm version. All commands below run from the repository root. Apply the delivered proven patch only after the baseline.
+Use a fresh checkout at the exact proof base above with repository dependencies installed through the pinned pnpm version. All commands below run from the repository root. After the baseline, fetch the reviewed branch and generate the candidate-only patch: `git fetch origin codex/test-audit-grok-auth-promotion && git diff 397459400c6e7b18b462dcac3d8886b390ca8e8c FETCH_HEAD -- packages/adapters/grok-local/src/server/adapter-auth-promotion.test.ts > /tmp/grok-candidate.patch`. Check and apply it with `git apply --check /tmp/grok-candidate.patch && git apply /tmp/grok-candidate.patch`.
 
 ```sh
 node node_modules/vitest/vitest.mjs run packages/adapters/grok-local/src/server/adapter-auth-promotion.test.ts --reporter=verbose
 ```
 
-Expected baseline: 30 passing cases. Apply `proven-grok-auth-promotion.patch` with `git apply`, then run the same command: 29 passing cases. Save only that candidate test diff with `git diff -- packages/adapters/grok-local/src/server/adapter-auth-promotion.test.ts > grok-candidate.patch`. Restore the original test from `397459400c6e7b18b462dcac3d8886b390ca8e8c` and rerun the same command: 30 passing cases.
+Expected baseline: 30 passing cases. Apply `/tmp/grok-candidate.patch`, then run the same command: 29 passing cases. Restore the original test from `397459400c6e7b18b462dcac3d8886b390ca8e8c` and rerun the same command: 30 passing cases.
 
 With the original test restored, execute this exact production mutation:
 
@@ -65,10 +65,10 @@ owner.write_text(source[:start] + section.replace(cleanup, "") + source[end:])
 
 Run the same full-owner test command. Expected original control: 29 passing and one failure at `leaves no staged temporary file in the company home after a kept (not-fresher) outcome`; verbose diff shows actual `.auth-<pid>-<uuid>.tmp` and `auth.json` versus the fixed expected `["auth.json"]`.
 
-Apply `grok-candidate.patch` and run the same command under unchanged mutated production. Expected keeper control: 28 passing and one failure at `keeps the home when the login is older than the existing same-identity credential`, with the same actual-directory mismatch.
+Apply `/tmp/grok-candidate.patch` and run the same command under unchanged mutated production. Expected keeper control: 28 passing and one failure at `keeps the home when the login is older than the existing same-identity credential`, with the same actual-directory mismatch.
 
 Always restore `packages/adapters/grok-local/src/server/adapter-auth-promotion.ts` from the exact proof-base commit in a finally/trap cleanup, even when either deliberately failing command exits 1. Leave the candidate test applied and rerun the same full-owner command: 29 passing cases. Confirm restored production SHA256 equals the value above. The mutation intentionally changes only the second writer's cleanup line; removing the first writer's cleanup or its handle-close line is a different control and must not be substituted.
 
 For combined integration, apply the other three proven test patches plus this Grok patch to a fresh exact #16106 checkout, require each `git apply --check` to succeed, and run the same full Grok-owner command: 29 passing. No production mutation remains during this positive check.
 
-Files: proven-grok-auth-promotion.patch is the deliverable; runs.json retains every accepted count/failure/source/report/log SHA256; raw phase JSON and logs retain executable evidence; kept-temp-leak.mutation.patch pins exact regression; success.json records restoration/counts; lineage-hashes.json pins actual predicate/resolver/lock owners; integrated-receipt.json records combined patch check/full Grok run. No broader typecheck/build/default-suite success claim.
+The candidate patch is reproducible from the exact proof base and reviewed branch with the fetch/diff command above. Detailed raw phase logs and JSON remain in the original isolated proof workspace and are not claimed as checked-in deliverables. The mutation and restore steps below are fully specified. No broader typecheck/build/default-suite success claim.
