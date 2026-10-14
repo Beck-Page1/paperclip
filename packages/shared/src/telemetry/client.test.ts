@@ -3,7 +3,6 @@ import { TelemetryClient } from "./client.js";
 import { resolveTelemetryConfig } from "./config.js";
 import type { TelemetryConfig, TelemetryDimensions, TelemetryState } from "./types.js";
 
-// Every envelope must stay within the server's top-level wire allow-set.
 const CONTRACT_KEYS = new Set(["app", "schemaVersion", "installId", "version", "events", "batchId"]);
 
 const TEST_STATE: TelemetryState = {
@@ -407,7 +406,7 @@ describe("TelemetryClient batched retry + backoff", () => {
 
     const bodies = sentBodies();
     expect(bodies[0]?.batchId).toBe(bodies[1]?.batchId); // identical id on retry
-    expect(bodies[1]?.events).toEqual(bodies[0]?.events); // no re-mix on retry
+    expect(bodies[1]?.events).toEqual(bodies[0]?.events);
     client.stop();
   });
 
