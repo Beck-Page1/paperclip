@@ -14,6 +14,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
@@ -1068,6 +1069,53 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       { controllerGeneration: 5, providerAttempt: 0 },
     ]);
   });
+
+  it("recovers an unclaimed remote startup once without requiring a provider checkpoint", async () => {
+    const fixture = await seedRun("REMOTE-UNCLAIMED");
+    await fixture.db.update(heartbeatRuns).set({
+      runnerProfileJson: { nativeWorkspaceSync: remotePreparedWorkspace() },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const dispositions = (await Promise.all([successor, { ...successor, bootId: randomUUID() }].map(controller =>
+      claimNativeRestartRecoveries({ db: fixture.db, controller, restartKind: "hard", runIds: [fixture.runId] }),
+    ))).flat();
+    expect(dispositions.filter(row => row.kind === "bootstrap_incomplete")).toEqual([
+      expect.objectContaining({ runId: fixture.runId, providerAttempt: 0, controllerGeneration: 1 }),
+    ]);
+    expect(dispositions.filter(row => row.kind === "awaiting_evidence")).toHaveLength(1);
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", nativeSessionId: fixture.native.normalizedSessionId });
+    expect(await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+  });
+
+  function remotePreparedWorkspace() {
+    return { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+      descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+      workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: randomUUID(),
+      remoteCwd: "/workspace", resourceDisposition: "destroy" };
+  }
+
+  it.each(["claimed", "generation", "process", "launch", "provider-event", "checkpoint", "invalid-workspace"])(
+    "keeps remote startup recovery blocked with contradictory %s evidence", async (kind) => {
+      const fixture = await seedRun(`REMOTE-${kind}`);
+      await fixture.db.update(heartbeatRuns).set({
+        runnerProfileJson: { nativeWorkspaceSync: kind === "invalid-workspace" ? {} : remotePreparedWorkspace(),
+          ...(kind === "checkpoint" ? { sessionCheckpoint: {} } : {}) },
+        ...(kind === "process" ? { processPid: 2_000_000_001 } : {}),
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+      if (kind === "claimed" || kind === "generation") await fixture.db.update(nativeRunFinalizations)
+        .set(kind === "claimed" ? { attempt: 1 } : { controllerGeneration: 1 })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (kind === "launch" || kind === "provider-event") await fixture.db.insert(heartbeatRunEvents).values({
+        companyId, runId: fixture.runId, agentId, seq: 1, stream: "system", level: "info",
+        eventType: kind === "launch" ? "native.process_start_requested" : "item.updated",
+        ...(kind === "provider-event" ? { sourceEventId: "provider-event-1" } : {}),
+      });
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] })).toEqual([
+        { kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" },
+      ]);
+    },
+  );
 
   it.each([2, 3])("recovers a checkpointed restart interruption within provider budget %s", async (attempt) => {
     const fixture = await seedRun(`INTERRUPTED-${attempt}`);

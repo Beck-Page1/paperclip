@@ -1,7 +1,11 @@
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
-import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
+import {
+  PROCESS_IDENTITY_RECORDED,
+  PROCESS_START_REQUESTED,
+  recordNativeLocalProcessStop,
+} from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -287,6 +291,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
   remoteSandbox?: boolean;
+  /** Durable coordinator receipt, checked under the execution locks. */
+  unclaimedBootstrap?: boolean;
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -308,6 +314,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   // inspection; the executor must prove the original lease and authenticate
   // the surviving runner before it can resume delivery.
   if (input.remoteSandbox) {
+    if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
+      return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
+    }
     return input.hasCheckpoint &&
       input.checkpointIdentityMatches === true &&
       input.hasProviderEvidence
@@ -750,8 +759,54 @@ export async function claimNativeRestartRecoveries(input: {
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
+      // Workspace staging precedes the executor's first durable claim. Every
+      // native provider must increment attempt before it can launch. Recover
+      // that untouched startup without pretending it has a provider checkpoint.
+      // Missing PIDs/events alone never grant this authority; a prior claim or
+      // contradictory launch receipt keeps the existing remote guard in force.
+      let unclaimedBootstrap =
+        remoteWorkspace?.state === "prepared" &&
+        row.coordinator.phase === "observed" &&
+        row.coordinator.attempt === 0 &&
+        row.coordinator.controllerGeneration === 0 &&
+        !row.coordinator.controllerBootId &&
+        !row.coordinator.controllerPid &&
+        !row.coordinator.controllerProcessStartedAt &&
+        !row.coordinator.leaseOwner &&
+        !row.coordinator.leaseExpiresAt &&
+        !row.coordinator.failureDetail?.successorRunId &&
+        !row.run.processPid &&
+        !row.run.processGroupId &&
+        !row.run.processStartedAt &&
+        !row.run.sessionIdBefore &&
+        !row.run.sessionIdAfter &&
+        Boolean(row.run.nativeSessionId && row.run.runnerInstanceId) &&
+        !hasCheckpoint &&
+        !hasProviderEvidence;
+      if (unclaimedBootstrap) {
+        const [executionEvent] = await tx
+          .select({ id: heartbeatRunEvents.id })
+          .from(heartbeatRunEvents)
+          .where(and(
+            eq(heartbeatRunEvents.companyId, row.run.companyId),
+            eq(heartbeatRunEvents.runId, row.run.id),
+            or(
+              isNotNull(heartbeatRunEvents.sourceEventId),
+              inArray(heartbeatRunEvents.eventType, [
+                "adapter.invoke",
+                PROCESS_START_REQUESTED,
+                PROCESS_IDENTITY_RECORDED,
+                "tool.execution.started",
+              ]),
+            ),
+          ))
+          .limit(1);
+        unclaimedBootstrap = !executionEvent;
+      }
+
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox,
+        unclaimedBootstrap,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,

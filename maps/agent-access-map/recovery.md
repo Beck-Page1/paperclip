@@ -24,6 +24,10 @@ Agent access: `available` — REST / native call_api; CLI issue diagnostics.
 
 Policy: Task/run visibility, run ownership and source/action policy; workspace export
 retry and some operator controls require board.
+The server can recover a prepared remote bootstrap only with a durable
+never-claimed executor receipt and no contradictory execution evidence. This
+automatic classification grants no new agent action or permission; normal
+execution admission and durable runner-state verification still apply.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L9478) at
 the reviewed commit above.
