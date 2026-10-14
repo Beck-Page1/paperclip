@@ -291,7 +291,6 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
   remoteSandbox?: boolean;
-  /** Durable coordinator receipt, checked under the execution locks. */
   unclaimedBootstrap?: boolean;
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
@@ -759,11 +758,6 @@ export async function claimNativeRestartRecoveries(input: {
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
-      // Workspace staging precedes the executor's first durable claim. Every
-      // native provider must increment attempt before it can launch. Recover
-      // that untouched startup without pretending it has a provider checkpoint.
-      // Missing PIDs/events alone never grant this authority; a prior claim or
-      // contradictory launch receipt keeps the existing remote guard in force.
       let unclaimedBootstrap =
         remoteWorkspace?.state === "prepared" &&
         row.coordinator.phase === "observed" &&
