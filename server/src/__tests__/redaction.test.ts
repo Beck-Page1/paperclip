@@ -951,14 +951,22 @@ describe("serialized JSON string leaves", () => {
     expect(JSON.parse(masked.value)).toEqual({ type: "plain", value: "hello", id: 123, password: REDACTED_EVENT_VALUE });
   });
 
-  it("falls back to text masking for deeply nested serialized JSON", () => {
+  it("masks the whole leaf for deeply nested serialized JSON", () => {
     for (const depth of [100, 50_000]) {
-      const deep = `${"[".repeat(depth)}{"password":"${secret}"}${"]".repeat(depth)}`;
-      const result = redactEventPayload({ value: deep }) as { value: string };
-      expect(result.value).not.toContain(secret);
+      const deep = `${"[".repeat(depth)}{"pass\\u0077ord":"${secret}"}${"]".repeat(depth)}`;
+      expect(redactEventPayload({ value: deep })).toEqual({ value: REDACTED_EVENT_VALUE });
     }
     const shallow = JSON.stringify({ a: [[{ b: "ok" }]], password: secret });
     expect(JSON.parse((redactEventPayload({ value: shallow }) as { value: string }).value).a).toEqual([[{ b: "ok" }]]);
+  });
+
+  it("masks the value after a secret flag in serialized command arguments", () => {
+    for (const key of ["argv", "commandArgs"]) {
+      const result = redactEventPayload({ value: JSON.stringify({ [key]: ["tool", "--api-key", secret, "--verbose"] }) }) as {
+        value: string;
+      };
+      expect(JSON.parse(result.value)[key]).toEqual(["tool", "--api-key", REDACTED_EVENT_VALUE, "--verbose"]);
+    }
   });
 
   it("bounds nested serialized JSON and still masks the secret", () => {

@@ -734,8 +734,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 // Nested serialized JSON strings (JSON inside a JSON string leaf) and
 // object/array nesting inside one serialized document are both bounded. Past
-// either bound the whole string falls back to the text scanner, which still
-// masks credentials but does not try to preserve JSON structure.
+// the nesting bound, or when a key carries credential text, the whole leaf is
+// masked: the text scanner cannot match JSON-escaped key spellings.
 const MAX_SERIALIZED_JSON_REDACTION_DEPTH = 4;
 const MAX_SERIALIZED_JSON_NESTING = 64;
 let serializedJsonRedactionDepth = 0;
@@ -784,7 +784,7 @@ function sanitizeSerializedJsonNode(
   const sanitized: Record<string, unknown> = Object.create(null);
   for (const [key, value] of Object.entries(node)) {
     // A credential in key text cannot be masked without changing the
-    // document's shape, so let the text scanner handle the whole string.
+    // document's shape, so mask the whole leaf.
     if (redactSensitiveText(key) !== key) throw SERIALIZED_JSON_FALLBACK;
     const auditValue = rawJson.isRawJSON?.(value)
       ? Number((value as { rawJSON: string }).rawJSON)
@@ -794,9 +794,35 @@ function sanitizeSerializedJsonNode(
       state.changed = true;
       continue;
     }
+    if (COMMAND_ARGS_PAYLOAD_KEY_RE.test(key) && Array.isArray(value)) {
+      sanitized[key] = sanitizeSerializedJsonCommandArgs(value, nesting + 1, state);
+      continue;
+    }
     sanitized[key] = sanitizeSerializedJsonNode(value, nesting + 1, state);
   }
   return sanitized;
+}
+
+// Same rule as sanitizeCommandArgs: mask the item after a secret flag.
+function sanitizeSerializedJsonCommandArgs(
+  args: unknown[],
+  nesting: number,
+  state: { changed: boolean },
+): unknown[] {
+  if (nesting >= MAX_SERIALIZED_JSON_NESTING) throw SERIALIZED_JSON_FALLBACK;
+  let redactNext = false;
+  return args.map((arg) => {
+    if (redactNext) {
+      redactNext = false;
+      state.changed = true;
+      return REDACTED_EVENT_VALUE;
+    }
+    if (typeof arg === "string" && CLI_SECRET_FLAG_RE.test(arg.trim())) {
+      redactNext = true;
+      return arg;
+    }
+    return sanitizeSerializedJsonNode(arg, nesting + 1, state);
+  });
 }
 
 function sanitizeSerializedJson(value: string): string | undefined {
@@ -811,21 +837,26 @@ function sanitizeSerializedJson(value: string): string | undefined {
   if (!toRawNumber) return undefined;
   serializedJsonRedactionDepth += 1;
   try {
-    // Deeply nested input can exhaust the stack inside JSON.parse; the catch
-    // below turns that into the text-scanner fallback.
-    const parsed: unknown = JSON.parse(
-      trimmed,
-      (_key, parsedValue: unknown, context?: { source?: string }) =>
-        typeof parsedValue === "number" && typeof context?.source === "string"
-          ? toRawNumber(context.source)
-          : parsedValue,
-    );
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        trimmed,
+        (_key, parsedValue: unknown, context?: { source?: string }) =>
+          typeof parsedValue === "number" && typeof context?.source === "string"
+            ? toRawNumber(context.source)
+            : parsedValue,
+      );
+    } catch (error) {
+      // Deeply nested input can exhaust the stack inside JSON.parse.
+      return error instanceof RangeError ? REDACTED_EVENT_VALUE : undefined;
+    }
     if (parsed === null || typeof parsed !== "object") return undefined;
     const state = { changed: false };
     const sanitized = sanitizeSerializedJsonNode(parsed, 0, state);
     return state.changed ? JSON.stringify(sanitized) : value;
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error === SERIALIZED_JSON_FALLBACK) return REDACTED_EVENT_VALUE;
+    throw error;
   } finally {
     serializedJsonRedactionDepth -= 1;
   }
