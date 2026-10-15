@@ -929,6 +929,38 @@ describe("serialized JSON string leaves", () => {
     expect(malformed.text).not.toContain(secret);
   });
 
+  it("masks a credential that appears in a serialized JSON key", () => {
+    const key = "sk-abcdefghijklmnopqrstuvwx";
+    const result = redactEventPayload({ value: JSON.stringify({ [key]: 1 }) }) as { value: string };
+    expect(result.value).not.toContain(key);
+  });
+
+  it("keeps large integer IDs exact when masking another field", () => {
+    const result = redactEventPayload({ value: `{"id":9007199254740993,"password":"${secret}"}` }) as {
+      value: string;
+    };
+    expect(result.value).toBe(`{"id":9007199254740993,"password":"${REDACTED_EVENT_VALUE}"}`);
+  });
+
+  it("does not apply configuration-binding conversion to provider JSON", () => {
+    const clean = JSON.stringify({ type: "plain", value: "hello", id: 123 });
+    expect(redactEventPayload({ value: clean })).toEqual({ value: clean });
+    const masked = redactEventPayload({
+      value: JSON.stringify({ type: "plain", value: "hello", id: 123, password: secret }),
+    }) as { value: string };
+    expect(JSON.parse(masked.value)).toEqual({ type: "plain", value: "hello", id: 123, password: REDACTED_EVENT_VALUE });
+  });
+
+  it("falls back to text masking for deeply nested serialized JSON", () => {
+    for (const depth of [100, 50_000]) {
+      const deep = `${"[".repeat(depth)}{"password":"${secret}"}${"]".repeat(depth)}`;
+      const result = redactEventPayload({ value: deep }) as { value: string };
+      expect(result.value).not.toContain(secret);
+    }
+    const shallow = JSON.stringify({ a: [[{ b: "ok" }]], password: secret });
+    expect(JSON.parse((redactEventPayload({ value: shallow }) as { value: string }).value).a).toEqual([[{ b: "ok" }]]);
+  });
+
   it("bounds nested serialized JSON and still masks the secret", () => {
     let inner: unknown = { password: secret };
     for (let index = 0; index < 8; index += 1) inner = { wrapped: JSON.stringify(inner) };

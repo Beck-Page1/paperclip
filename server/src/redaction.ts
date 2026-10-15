@@ -732,8 +732,72 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+// Nested serialized JSON strings (JSON inside a JSON string leaf) and
+// object/array nesting inside one serialized document are both bounded. Past
+// either bound the whole string falls back to the text scanner, which still
+// masks credentials but does not try to preserve JSON structure.
 const MAX_SERIALIZED_JSON_REDACTION_DEPTH = 4;
+const MAX_SERIALIZED_JSON_NESTING = 64;
 let serializedJsonRedactionDepth = 0;
+
+// JSON.rawJSON keeps each number's source text, so reserializing never rounds
+// large integer IDs. Without it, fall back to the text scanner.
+const rawJson = JSON as unknown as {
+  rawJSON?: (text: string) => object;
+  isRawJSON?: (value: unknown) => boolean;
+};
+
+const SERIALIZED_JSON_FALLBACK = Symbol("serializedJsonFallback");
+
+function isSecretPayloadField(key: string, value: unknown): boolean {
+  return (
+    (SECRET_PAYLOAD_KEY_RE.test(key) || AUDIT_COUNT_PAYLOAD_KEYS.has(key)) &&
+    !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
+    !isAuditCountField(key, value)
+  );
+}
+
+function sanitizeStringLeaf(value: string): string {
+  if (looksLikeCredentialJwt(value) && !isPublicExecutorToolSelector(value))
+    return REDACTED_EVENT_VALUE;
+  return sanitizeSerializedJson(value) ?? redactSensitiveText(value);
+}
+
+// Walks parsed provider JSON as plain data. Configuration-binding conversions
+// in sanitizeValue are not applied here, so ordinary provider fields such as
+// `{"type":"plain","value":...,"id":...}` are kept intact.
+function sanitizeSerializedJsonNode(
+  node: unknown,
+  nesting: number,
+  state: { changed: boolean },
+): unknown {
+  if (typeof node === "string") {
+    const sanitized = sanitizeStringLeaf(node);
+    if (sanitized !== node) state.changed = true;
+    return sanitized;
+  }
+  if (node === null || typeof node !== "object" || rawJson.isRawJSON?.(node))
+    return node;
+  if (nesting >= MAX_SERIALIZED_JSON_NESTING) throw SERIALIZED_JSON_FALLBACK;
+  if (Array.isArray(node))
+    return node.map((item) => sanitizeSerializedJsonNode(item, nesting + 1, state));
+  const sanitized: Record<string, unknown> = Object.create(null);
+  for (const [key, value] of Object.entries(node)) {
+    // A credential in key text cannot be masked without changing the
+    // document's shape, so let the text scanner handle the whole string.
+    if (redactSensitiveText(key) !== key) throw SERIALIZED_JSON_FALLBACK;
+    const auditValue = rawJson.isRawJSON?.(value)
+      ? Number((value as { rawJSON: string }).rawJSON)
+      : value;
+    if (isSecretPayloadField(key, auditValue)) {
+      sanitized[key] = REDACTED_EVENT_VALUE;
+      state.changed = true;
+      continue;
+    }
+    sanitized[key] = sanitizeSerializedJsonNode(value, nesting + 1, state);
+  }
+  return sanitized;
+}
 
 function sanitizeSerializedJson(value: string): string | undefined {
   const trimmed = value.trim();
@@ -743,17 +807,25 @@ function sanitizeSerializedJson(value: string): string | undefined {
     return undefined;
   if (serializedJsonRedactionDepth >= MAX_SERIALIZED_JSON_REDACTION_DEPTH)
     return maybeContainsSecretText(value) ? REDACTED_EVENT_VALUE : undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== "object") return undefined;
+  const toRawNumber = rawJson.rawJSON;
+  if (!toRawNumber) return undefined;
   serializedJsonRedactionDepth += 1;
   try {
-    const reserialized = JSON.stringify(sanitizeValue(parsed));
-    return reserialized === JSON.stringify(parsed) ? value : reserialized;
+    // Deeply nested input can exhaust the stack inside JSON.parse; the catch
+    // below turns that into the text-scanner fallback.
+    const parsed: unknown = JSON.parse(
+      trimmed,
+      (_key, parsedValue: unknown, context?: { source?: string }) =>
+        typeof parsedValue === "number" && typeof context?.source === "string"
+          ? toRawNumber(context.source)
+          : parsedValue,
+    );
+    if (parsed === null || typeof parsed !== "object") return undefined;
+    const state = { changed: false };
+    const sanitized = sanitizeSerializedJsonNode(parsed, 0, state);
+    return state.changed ? JSON.stringify(sanitized) : value;
+  } catch {
+    return undefined;
   } finally {
     serializedJsonRedactionDepth -= 1;
   }
@@ -766,11 +838,7 @@ function sanitizeValue(value: unknown): unknown {
   // `message`, `reason`, or inside arrays, so apply the text scanner at every
   // string leaf after validated protocol discriminators have had a chance to
   // opt in above in sanitizeRecord.
-  if (typeof value === "string") {
-    if (looksLikeCredentialJwt(value) && !isPublicExecutorToolSelector(value))
-      return REDACTED_EVENT_VALUE;
-    return sanitizeSerializedJson(value) ?? redactSensitiveText(value);
-  }
+  if (typeof value === "string") return sanitizeStringLeaf(value);
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) {
     const version = safeSecretVersion(value.version);
@@ -920,11 +988,7 @@ export function sanitizeRecord(
       redacted[key] = redactSensitiveText(value);
       continue;
     }
-    if (
-      (SECRET_PAYLOAD_KEY_RE.test(key) || AUDIT_COUNT_PAYLOAD_KEYS.has(key)) &&
-      !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
-      !isAuditCountField(key, value)
-    ) {
+    if (isSecretPayloadField(key, value)) {
       if (isSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
         continue;
