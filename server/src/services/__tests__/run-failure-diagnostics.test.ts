@@ -190,6 +190,19 @@ describe("run failure diagnostics", () => {
     }
   });
 
+  it("exports only the closed vocabulary of an unclassified native turn failure", () => {
+    const diagnostic = { provider: "codex", category: "turn_failed", codexErrorInfo: "responseStreamDisconnected", httpStatus: 502 };
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      nativeTurnFailure: { ...diagnostic, runnerFailureCode: "Private code", message: "private-provider-response" },
+    } }), {}));
+    expect(result.provider).toEqual(diagnostic);
+    expect(JSON.stringify(result)).not.toContain("rivate");
+    for (const value of [null, [], { ...diagnostic, codexErrorInfo: "private-kind" },
+      Object.defineProperty({}, "provider", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ resultJson: { nativeTurnFailure: value } }), {}).provider).toEqual({});
+    }
+  });
+
   it("exports which native close barrier failed without tool identities or provider text", () => {
     const closeFailure = (settlement: unknown) => Object.assign(
       new Error("provider_transport_failed: runner did not durably suspend before checkpoint"),
