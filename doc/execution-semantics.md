@@ -1148,6 +1148,11 @@ root before starting. Missing evidence after a prior claim does not qualify.
 Classification preserves the provider attempt count; execution consumes the
 first attempt through the normal claim and admission gates.
 
+This path also requires a server-owned preparation fencing marker created with
+fresh native run identities. Unmarked preparations from older servers remain
+held during rolling upgrades, because those servers cannot safely yield to a
+recovery owner. Revisiting an existing preparation cannot add that marker.
+
 A preparation that resumes after another execution acquired the coordinator
 lease yields through the controller-detachment path. It does not fail the shared
 run, release its environment, or start another provider. Lease expiry alone does

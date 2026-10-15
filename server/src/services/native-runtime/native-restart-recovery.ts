@@ -1,5 +1,5 @@
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
-import { activeNativeExecutionRunIds } from "./native-active-runs.js";
+import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import {
   PROCESS_IDENTITY_RECORDED,
   PROCESS_START_REQUESTED,
@@ -761,6 +761,7 @@ export async function claimNativeRestartRecoveries(input: {
 
       let unclaimedBootstrap =
         remoteWorkspace?.state === "prepared" &&
+        row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION &&
         row.coordinator.phase === "observed" &&
         row.coordinator.attempt === 0 &&
         row.coordinator.controllerGeneration === 0 &&

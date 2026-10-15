@@ -257,7 +257,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       issueId,
       phase: "observed",
     });
-    return { db, issueId, runId, native };
+    const [preparedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    return { db, issueId, runId, native, preparedProfile: preparedRun.runnerProfileJson };
   }
 
   function transportOptions(
@@ -1074,7 +1075,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   it("recovers an unclaimed remote startup once without requiring a provider checkpoint", async () => {
     const fixture = await seedRun("REMOTE-UNCLAIMED");
     await fixture.db.update(heartbeatRuns).set({
-      runnerProfileJson: { nativeWorkspaceSync: remotePreparedWorkspace() },
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
     }).where(eq(heartbeatRuns.id, fixture.runId));
     const dispositions = (await Promise.all([successor, { ...successor, bootId: randomUUID() }].map(controller =>
       claimNativeRestartRecoveries({ db: fixture.db, controller, restartKind: "hard", runIds: [fixture.runId] }),
@@ -1091,7 +1092,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   it.each([false, true])("yields an original preparation after remote recovery claims its run (expired lease=%s)", async (expired) => {
     const fixture = await seedRun(`REMOTE-PREPARATION-${expired}`);
     await fixture.db.update(heartbeatRuns).set({
-      runnerProfileJson: { nativeWorkspaceSync: remotePreparedWorkspace() },
+      runnerProfileJson: { ...fixture.preparedProfile, nativeWorkspaceSync: remotePreparedWorkspace() },
     }).where(eq(heartbeatRuns.id, fixture.runId));
     const execution = buildNativeExecutionInput({
       companyId, agentId, runId: fixture.runId,
@@ -1149,11 +1150,24 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       remoteCwd: "/workspace", resourceDisposition: "destroy" };
   }
 
-  it.each(["claimed", "generation", "process", "launch", "provider-event", "checkpoint", "invalid-workspace"])(
+  it.each(["claimed", "generation", "process", "launch", "provider-event", "checkpoint", "invalid-workspace", "unfenced"])(
     "keeps remote startup recovery blocked with contradictory %s evidence", async (kind) => {
       const fixture = await seedRun(`REMOTE-${kind}`);
+      let profile = fixture.preparedProfile;
+      if (kind === "unfenced") {
+        profile = { ...profile };
+        delete profile.nativePreparationFencingVersion;
+        await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, fixture.runId));
+        const [olderRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        await prepareNativeHeartbeatRun({ db: fixture.db,
+          run: { ...olderRun, runnerProfileJson: { ...profile, nativePreparationFencingVersion: 1 } },
+          issue: { id: fixture.issueId, title: "Older preparation", description: null }, environmentLeaseId: "older-lease" });
+        const [unchanged] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(unchanged.runnerProfileJson).not.toHaveProperty("nativePreparationFencingVersion");
+        profile = unchanged.runnerProfileJson;
+      }
       await fixture.db.update(heartbeatRuns).set({
-        runnerProfileJson: { nativeWorkspaceSync: kind === "invalid-workspace" ? {} : remotePreparedWorkspace(),
+        runnerProfileJson: { ...profile, nativeWorkspaceSync: kind === "invalid-workspace" ? {} : remotePreparedWorkspace(),
           ...(kind === "checkpoint" ? { sessionCheckpoint: {} } : {}) },
         ...(kind === "process" ? { processPid: 2_000_000_001 } : {}),
       }).where(eq(heartbeatRuns.id, fixture.runId));

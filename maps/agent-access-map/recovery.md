@@ -32,6 +32,9 @@ The current server's active preparation remains with its existing execution.
 A preparation that loses the coordinator lease cannot fail the shared run or
 revoke the new owner's gateway tokens, even after lease expiry. Only normal
 recovery can establish a takeover claim; no agent permission is added.
+Older unmarked preparations do not qualify for this automatic path during an
+upgrade. The fencing marker comes from fresh server-owned identity creation;
+caller profile data cannot upgrade an existing preparation.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L9478) at
 the reviewed commit above.
