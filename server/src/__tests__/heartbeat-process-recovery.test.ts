@@ -2049,6 +2049,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).resolves.toEqual({ status: "idle", errorReason: null });
   });
 
+  it("retries a continuation whose controller lease is lost before dispatch instead of blocking the issue", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const originalWatch = controllerLeases.watchLegacyControllerLease;
+    // Expire the claimed lease before workspace preparation renews it, so the
+    // real renewal is rejected and the watchdog stops setup before dispatch.
+    const watcher = vi.spyOn(controllerLeases, "watchLegacyControllerLease").mockImplementation((...args) => {
+      const lease = originalWatch(...args);
+      if (args[1].id !== runId) return lease;
+      return { ...lease, async assertOwned(stage?: "dispatching") {
+        if (stage === undefined) {
+          await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() - 60_000) })
+            .where(eq(heartbeatRuns.id, runId));
+        }
+        return lease.assertOwned(stage);
+      } };
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+
+      expect(await heartbeat.getRun(runId)).toMatchObject({
+        status: "failed",
+        errorCode: "controller_lease_lost",
+        resultJson: {
+          cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_rejected)" },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        },
+      });
+      expect(
+        mockAdapterExecute.mock.calls.some(
+          ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
+        ),
+      ).toBe(false);
+      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+      expect(retries).toHaveLength(1);
+      // One bounded transient retry, instead of escalating `setup_failed`.
+      expect(retries[0]).toMatchObject({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1 });
+      expect(
+        await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId))
+          .then((rows) => rows[0]?.status),
+      ).toBe("in_progress");
+      expect(
+        await db.select({ status: agents.status }).from(agents).where(eq(agents.id, agentId))
+          .then((rows) => rows[0]?.status),
+      ).not.toBe("error");
+    } finally {
+      await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+      watcher.mockRestore();
+    }
+  });
+
   it("does not queue immediate recovery when the failed run's issue is hidden", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,

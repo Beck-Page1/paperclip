@@ -108,7 +108,7 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     };
     const completion = createHeartbeatRunCompletion(db, deps);
     const failure = (err: unknown): FailHeartbeatRunInput => ({ ...input, runId: run.id, err, identityRedactor: createAgentIdentityRedactor("private-identity-material"), requiredWorkspaceRestoreEvidence: { workspaceRestoreFailure: { reason: "missing_base" } }, legacyAdapterEntered: true, goalCheckpointSession: { current: null }, previousSessionDisplayId: "previous-session", taskSession: null });
-    const setup = (outerErr: unknown) => ({ run, runId: run.id, outerErr, signal: controller.signal, identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
+    const setup = (outerErr: unknown, providerDispatchStarted = false) => ({ run, runId: run.id, outerErr, signal: controller.signal, providerDispatchStarted, identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
@@ -324,6 +324,15 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     await f.completion.failRunSetup(f.setup(new Error("environment acquisition aborted")));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
       resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it("does not make a lease loss retryable once provider work has started", async () => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_error"));
+    await f.completion.failRunSetup(f.setup(new Error("usage capture write failed"), true));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "setup_failed",
+      resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_error)" } } });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "failed", expect.any(String), expect.objectContaining({ keepIdleOnFailure: false }));
   });
 
   it("leaves a winning terminal outcome and agent state untouched after a late setup error", async () => {

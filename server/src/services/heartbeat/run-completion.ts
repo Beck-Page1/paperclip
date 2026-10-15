@@ -134,6 +134,8 @@ export interface FailHeartbeatRunSetupInput {
   runId: string;
   outerErr: unknown;
   signal: AbortSignal;
+  /** True once a legacy adapter or native dispatch began provider work. */
+  providerDispatchStarted: boolean;
   identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "redact">;
   readFailureReportSecrets: () => string[];
 }
@@ -1248,10 +1250,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
-    const { run, runId, outerErr, signal, identityRedactor, readFailureReportSecrets } = input;
+    const { run, runId, outerErr, signal, providerDispatchStarted, identityRedactor, readFailureReportSecrets } = input;
     // The lease watchdog stopped preparation because this host no longer owns
     // the run. That is host infrastructure, not a defect in the agent or setup.
-    const controllerLeaseLost = signal.reason instanceof LegacyControllerLeaseLostError;
+    // A post-dispatch error can also land here (for example a failed usage
+    // capture write), so only a stop before dispatch is a retryable lease loss.
+    const controllerLeaseLost = !providerDispatchStarted &&
+      signal.reason instanceof LegacyControllerLeaseLostError;
     // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
     // The inner catch did not fire, so we must record the failure here.
     const message = redactCurrentUserText(
