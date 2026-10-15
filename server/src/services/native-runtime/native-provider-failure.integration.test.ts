@@ -136,6 +136,9 @@ describe("native completed failure diagnostics", () => {
       expect(adapter.errorCode).toBe(classified ? "native_provider_model_rejected" : undefined);
       expect(adapter.errorMessage).toBe(classified ? NATIVE_MODEL_REJECTION_MESSAGE : scenario === "succeeded" ? null : `Native session ${terminal.runTerminalState}`);
       expect(adapter.resultJson?.nativeProviderFailure).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : undefined);
+      // Only a committed, unclassified failure of the terminal turn explains the generic message.
+      const turnFailure = scenario === "unknown-error" ? { provider: "codex", category: "turn_failed", codexErrorInfo: "other" } : undefined;
+      expect(adapter.resultJson?.nativeTurnFailure).toEqual(turnFailure);
       expect(adapter.nativeFinalization).toMatchObject({ result, terminal, turnId, workspaceFinalizeStatus: "pending" });
       expect(provider.execute).toHaveBeenCalledTimes(1);
       expect(execution.provider).toEqual({ kind: "codex", model });
@@ -145,7 +148,7 @@ describe("native completed failure diagnostics", () => {
       expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
       expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).toHaveLength(scenario.startsWith("untrusted-") ? 0 : 1);
       const diagnostics = collectRunFailureDiagnostics({ ...run, resultJson: adapter.resultJson ?? null }, {});
-      expect(diagnostics.provider).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : {});
+      expect(diagnostics.provider).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : turnFailure ?? {});
       expect(JSON.stringify(diagnostics)).not.toContain(model);
       expect(JSON.stringify(diagnostics)).not.toContain("Private");
       const [persistedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
