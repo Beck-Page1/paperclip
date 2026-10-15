@@ -1,4 +1,5 @@
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { activeNativeExecutionRunIds } from "./native-active-runs.js";
 import {
   PROCESS_IDENTITY_RECORDED,
   PROCESS_START_REQUESTED,
@@ -778,6 +779,10 @@ export async function claimNativeRestartRecoveries(input: {
         !hasCheckpoint &&
         !hasProviderEvidence;
       if (unclaimedBootstrap) {
+        if (activeNativeExecutionRunIds.has(row.run.id) &&
+            controller.bootId === (await currentNativeControllerIdentity()).bootId) {
+          return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
+        }
         const [executionEvent] = await tx
           .select({ id: heartbeatRunEvents.id })
           .from(heartbeatRunEvents)

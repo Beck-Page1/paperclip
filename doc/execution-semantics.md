@@ -1148,6 +1148,12 @@ root before starting. Missing evidence after a prior claim does not qualify.
 Classification preserves the provider attempt count; execution consumes the
 first attempt through the normal claim and admission gates.
 
+A preparation that resumes after another execution acquired the coordinator
+lease yields through the controller-detachment path. It does not fail the shared
+run, release its environment, or start another provider. Lease expiry alone does
+not authorize that stale preparation to take ownership; normal recovery must
+establish a new claim first.
+
 An exact local Codex restart can restore the conversation after losing its active
 turn. Runnerd records this as `provider_turn_lost_on_restore`, with no invented
 task result. The admitted restart attempt may send one continuation in that same

@@ -1834,6 +1834,11 @@ that classification finishes.
   controller or lease owner, and no session, process, launch, or provider evidence.
   Any existing durable runner root must still prove an untouched bootstrap before
   execution starts. A prior claim or contradictory evidence retains the hold.
+- If the original preparation resumes after another execution claimed the run,
+  it yields without failing the shared run or cleaning up the new owner. An
+  expired foreign lease still requires normal recovery before takeover.
+  Recovery leaves this server's active preparation with its current execution.
+  A detached execution also preserves the current owner's run-scoped gateway tokens.
 - A runner that died before its first authenticated connection can restart on
   the same run only when its durable root proves that no provider authority or
   checkpoint exists. Paperclip quarantines the incomplete root first.

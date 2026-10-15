@@ -110,6 +110,12 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
+The same database suite pauses an original preparation while recovery claims
+the remote run. It then verifies that the old preparation yields without opening
+a provider or changing the recovery owner, for both live and expired leases.
+[Heartbeat boundary tests](../../server/src/services/heartbeat/runtime-execution.test.ts)
+verify that the detachment signal transfers recovery ownership before cleanup.
+
 For a native workspace owner hold, repeat issue reads and recovery checks after
 the task becomes done or cancelled. Verify one unchanged action ID, attempt
 count, and timestamps; task completion must not authorize copyback. Clear only

@@ -28,6 +28,10 @@ The server can recover a prepared remote bootstrap only with a durable
 never-claimed executor receipt and no contradictory execution evidence. This
 automatic classification grants no new agent action or permission; normal
 execution admission and durable runner-state verification still apply.
+The current server's active preparation remains with its existing execution.
+A preparation that loses the coordinator lease cannot fail the shared run or
+revoke the new owner's gateway tokens, even after lease expiry. Only normal
+recovery can establish a takeover claim; no agent permission is added.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L9478) at
 the reviewed commit above.
