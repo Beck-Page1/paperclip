@@ -62,7 +62,9 @@ export interface LegacyControllerLeaseLossTiming {
   deadlineLateMs: number | null;
   renewalCount: number;
 }
-export type LegacyControllerLeaseLoss = { cause: LegacyControllerLeaseLossCause } & Partial<LegacyControllerLeaseLossTiming>;
+/** Read-side record: a `null` timing is dropped, so every present timing is a number. */
+export type LegacyControllerLeaseLoss = { cause: LegacyControllerLeaseLossCause }
+  & Partial<Record<keyof LegacyControllerLeaseLossTiming, number>>;
 
 const MAX_LEASE_LOSS_TIMING = 86_400_000;
 const leaseLossTimingValue = (value: unknown) =>
