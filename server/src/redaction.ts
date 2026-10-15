@@ -831,8 +831,10 @@ function sanitizeSerializedJson(value: string): string | undefined {
   const last = trimmed[trimmed.length - 1];
   if (!((first === "{" && last === "}") || (first === "[" && last === "]")))
     return undefined;
+  // Past the bound, escaped keys can hide from the text scanner, so mask the
+  // whole leaf, as for the nesting bound.
   if (serializedJsonRedactionDepth >= MAX_SERIALIZED_JSON_REDACTION_DEPTH)
-    return maybeContainsSecretText(value) ? REDACTED_EVENT_VALUE : undefined;
+    return REDACTED_EVENT_VALUE;
   const toRawNumber = rawJson.rawJSON;
   if (!toRawNumber) return undefined;
   serializedJsonRedactionDepth += 1;

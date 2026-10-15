@@ -974,4 +974,14 @@ describe("serialized JSON string leaves", () => {
     for (let index = 0; index < 8; index += 1) inner = { wrapped: JSON.stringify(inner) };
     expect(JSON.stringify(redactEventPayload({ value: JSON.stringify(inner) }))).not.toContain(secret);
   });
+
+  it("masks escaped secret keys past the serialized-string depth bound", () => {
+    for (const wrappers of [3, 4, 5, 8]) {
+      for (const key of ['"password"', '"\\u0070assword"']) {
+        let value = `{${key}:"${secret}"}`;
+        for (let index = 0; index < wrappers; index += 1) value = JSON.stringify({ wrapped: value });
+        expect(JSON.stringify(redactEventPayload({ value }))).not.toContain(secret);
+      }
+    }
+  });
 });
