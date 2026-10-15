@@ -732,6 +732,33 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
+const MAX_SERIALIZED_JSON_REDACTION_DEPTH = 4;
+let serializedJsonRedactionDepth = 0;
+
+function sanitizeSerializedJson(value: string): string | undefined {
+  const trimmed = value.trim();
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (!((first === "{" && last === "}") || (first === "[" && last === "]")))
+    return undefined;
+  if (serializedJsonRedactionDepth >= MAX_SERIALIZED_JSON_REDACTION_DEPTH)
+    return maybeContainsSecretText(value) ? REDACTED_EVENT_VALUE : undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object") return undefined;
+  serializedJsonRedactionDepth += 1;
+  try {
+    const reserialized = JSON.stringify(sanitizeValue(parsed));
+    return reserialized === JSON.stringify(parsed) ? value : reserialized;
+  } finally {
+    serializedJsonRedactionDepth -= 1;
+  }
+}
+
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   // Adapter diagnostics are provider-controlled text. Secret-bearing header or
@@ -740,9 +767,9 @@ function sanitizeValue(value: unknown): unknown {
   // string leaf after validated protocol discriminators have had a chance to
   // opt in above in sanitizeRecord.
   if (typeof value === "string") {
-    return looksLikeCredentialJwt(value) && !isPublicExecutorToolSelector(value)
-      ? REDACTED_EVENT_VALUE
-      : redactSensitiveText(value);
+    if (looksLikeCredentialJwt(value) && !isPublicExecutorToolSelector(value))
+      return REDACTED_EVENT_VALUE;
+    return sanitizeSerializedJson(value) ?? redactSensitiveText(value);
   }
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (isSecretRefBinding(value)) {

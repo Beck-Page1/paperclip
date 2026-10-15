@@ -874,3 +874,64 @@ second-line\" status=401`,
     });
   });
 });
+
+describe("serialized JSON string leaves", () => {
+  const secret = "Zq7-synthetic-not-real-9xK";
+  const textBlock = (data: unknown) => ({ content: [{ type: "text", text: JSON.stringify(data) }] });
+  const redactedText = (data: unknown) =>
+    (redactEventPayload(textBlock(data)) as { content: Array<{ text: string }> }).content[0]!.text;
+
+  it("keeps serialized JSON parseable when a credential label ends one string before the next", () => {
+    const page = {
+      ok: true,
+      matches: [
+        { id: "1", text: "first" },
+        { id: "2", elements: [{ type: "text", text: "wifi password:" }, { type: "text", text: secret }] },
+        { id: "3", text: "third" },
+      ],
+      pagination: { page: 2, page_count: 5 },
+    };
+    const parsed = JSON.parse(redactedText(page));
+    expect(parsed.matches.map((match: { id: string }) => match.id)).toEqual(["1", "2", "3"]);
+    expect(parsed.matches[1].elements).toHaveLength(2);
+    expect(parsed.matches[2].text).toBe("third");
+    expect(parsed.pagination).toEqual({ page: 2, page_count: 5 });
+  });
+
+  it("still masks quoted credential values inside serialized JSON", () => {
+    const parsed = JSON.parse(redactedText({ note: `config "password": "${secret}"` }));
+    expect(parsed.note).toBe(`config "password": "${REDACTED_EVENT_VALUE}"`);
+  });
+
+  it("masks secret-named keys and bearer values inside serialized JSON", () => {
+    const bearer = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const text = redactedText({
+      item: { name: "x", api_key: secret, access_token: secret },
+      note: `curl -H "Authorization: Bearer ${bearer}"`,
+    });
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain(bearer);
+    const parsed = JSON.parse(text);
+    expect(parsed.item).toEqual({ name: "x", api_key: REDACTED_EVENT_VALUE, access_token: REDACTED_EVENT_VALUE });
+  });
+
+  it("returns clean serialized JSON byte-identical", () => {
+    const raw = JSON.stringify({ ok: true, data: [{ id: 1, title: "Weekly sync" }] }, null, 2);
+    const result = redactEventPayload({ content: [{ type: "text", text: raw }] }) as { content: Array<{ text: string }> };
+    expect(result.content[0]!.text).toBe(raw);
+  });
+
+  it("keeps text redaction for non-JSON and malformed JSON-looking text", () => {
+    expect(redactEventPayload({ text: `notes: "password": "${secret}" end` })).toEqual({
+      text: `notes: "password": "${REDACTED_EVENT_VALUE}" end`,
+    });
+    const malformed = redactEventPayload({ text: `{"password": "${secret}", }x` }) as { text: string };
+    expect(malformed.text).not.toContain(secret);
+  });
+
+  it("bounds nested serialized JSON and still masks the secret", () => {
+    let inner: unknown = { password: secret };
+    for (let index = 0; index < 8; index += 1) inner = { wrapped: JSON.stringify(inner) };
+    expect(JSON.stringify(redactEventPayload({ value: JSON.stringify(inner) }))).not.toContain(secret);
+  });
+});
