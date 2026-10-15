@@ -325,6 +325,10 @@ the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
 (`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+A lease lost before adapter dispatch settles the run `failed` with error code
+`controller_lease_lost`, the same `controller_lease` cancellation evidence, and
+`executionRecovery.providerWorkStarted: false`. Issue continuation recovery
+retries it as transient infrastructure instead of blocking on `setup_failed`.
 The local lifecycle event includes this evidence. Started cancellations without
 an expected stop are also reported to Sentry; its cancellation diagnostics contain
 only source, expectedness, initiator type, and the closed lease-loss cause, never

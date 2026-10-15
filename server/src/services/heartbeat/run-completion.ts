@@ -7,7 +7,7 @@ import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure }
 import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
-import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -133,6 +133,7 @@ export interface FailHeartbeatRunSetupInput {
   run: Run;
   runId: string;
   outerErr: unknown;
+  signal: AbortSignal;
   identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "redact">;
   readFailureReportSecrets: () => string[];
 }
@@ -1247,7 +1248,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
-    const { run, runId, outerErr, identityRedactor, readFailureReportSecrets } = input;
+    const { run, runId, outerErr, signal, identityRedactor, readFailureReportSecrets } = input;
+    // The lease watchdog stopped preparation because this host no longer owns
+    // the run. That is host infrastructure, not a defect in the agent or setup.
+    const controllerLeaseLost = signal.reason instanceof LegacyControllerLeaseLostError;
     // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
     // The inner catch did not fire, so we must record the failure here.
     const message = redactCurrentUserText(
@@ -1286,6 +1290,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       nonRetryablePreflightFailureCode(outerErr);
     const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
     const setupFailureErrorCode =
+      (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
@@ -1330,6 +1335,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const setupFailureResultJson = {
       ...setupFailureDetails,
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...controllerLeaseLossResultJson(signal),
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     };
     const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
@@ -1462,7 +1468,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // Keep the failed run and its safe provider refusal authoritative,
         // but return the agent to idle so clients do not also announce a
         // misleading agent-wide error for the same rejected chat turn.
-        keepIdleOnFailure: Boolean(nonRetryablePreflightCode),
+        keepIdleOnFailure: Boolean(nonRetryablePreflightCode) || controllerLeaseLost,
       }).catch(() => undefined);
     }
   }
